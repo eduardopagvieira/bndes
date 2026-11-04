@@ -57,6 +57,8 @@ plt.rcParams.update({
 })
 FONTE = ("Fonte: BNDES, dados abertos de operações de financiamento. IPCA do Banco Central. "
          "Valores em reais de setembro de 2026. Elaboração própria.")
+FONTE_MACRO = ("Fonte: BNDES, dados abertos de operações de financiamento. PIB, Selic e TJLP do Banco Central. "
+               "Elaboração própria.")
 
 # custo financeiro agrupado. TJ462, TJ453 e TJ6 são variações da TJLP usadas em programas específicos
 CUSTOS = {"TJLP": "TJLP", "TJ462": "TJLP", "TJ453": "TJLP", "TJ6": "TJLP", "TLP": "TLP",
@@ -82,12 +84,12 @@ def inteiro(v):
     return f"{v:,.0f}".replace(",", ".")
 
 
-def finalizar(fig, ax, titulo, sub, arquivo):
+def finalizar(fig, ax, titulo, sub, arquivo, fonte=None):
     tem_legenda = ax.get_legend() is not None          # a legenda fica entre o subtítulo e o gráfico
     ax.set_title(titulo, pad=50 if tem_legenda else 30)
     ax.annotate(sub, (0, 1), xycoords="axes fraction", xytext=(0, 30 if tem_legenda else 8), textcoords="offset points",
                 color=TINTA_2, fontsize=9.5, va="bottom")
-    fig.text(0.01, 0.01, FONTE, color=APAGADO, fontsize=8, ha="left", va="bottom")
+    fig.text(0.01, 0.01, fonte or FONTE, color=APAGADO, fontsize=8, ha="left", va="bottom")
     fig.tight_layout(rect=(0, 0.03, 1, 1))
     fig.savefig(FIGURAS / arquivo, dpi=160)
     plt.close(fig)
@@ -350,6 +352,166 @@ def nome_curto(n):
     return NOMES.get(n, n.title()[:40])
 
 
+# ---------------------------------------------------------------- hipóteses da literatura
+
+NORTE_NORDESTE = {"AC", "AM", "AP", "PA", "RO", "RR", "TO", "AL", "BA", "CE", "MA", "PB", "PE", "PI", "RN", "SE"}
+
+
+def eixo_ano(ax, anos):
+    ax.set_xlim(anos.min() - 0.5, anos.max() + 0.5)
+    ax.set_xticks(range(int(anos.min()), int(anos.max()) + 1, 2))
+
+
+def estilo_linhas(ax):
+    ax.grid(axis="y", color=GRADE, linewidth=0.8)
+    ax.set_axisbelow(True)
+    ax.tick_params(length=0)
+
+
+def tamanho_na_economia(d):
+    """Papel anticíclico. Valor contratado (nominal) dividido pelo PIB do mesmo ano."""
+    macro = pd.read_csv(AUX / "macro_anual.csv", index_col="ano")
+    macro["contratado"] = d.groupby("ano")["valor_contratado"].sum()
+    macro["contratado_pib"] = macro["contratado"] / macro["pib"]
+    macro["diferenca_selic_tjlp"] = macro["selic"] - macro["tjlp"]
+    macro.to_csv(RESULTADOS / "macro_anual.csv", float_format="%.4f")
+    t = macro["contratado_pib"].dropna()
+
+    fig, ax = plt.subplots(figsize=(10, 4.6))
+    destaque = {2009, 2012, 2019, 2024}
+    ax.bar(t.index, t, width=0.72, color=[AZUL if a in destaque else "#9cc0ec" for a in t.index],
+           edgecolor=SUPERFICIE, linewidth=1)
+    for a in destaque:
+        ax.text(a, t[a] + t.max() * 0.02, pct(t[a], 1), ha="center", fontsize=8.5, color=TINTA_2)
+    ax.annotate("crise de 2008", (2009, t[2009] * 0.55), ha="center", fontsize=8.5, color=SUPERFICIE, rotation=90)
+    ax.yaxis.set_major_locator(mticker.MultipleLocator(0.01))
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: pct(v)))
+    eixo_ano(ax, t.index)
+    estilo_linhas(ax)
+    finalizar(fig, ax, "O BNDES chegou a contratar 4% do PIB num ano",
+              "Valor contratado em cada ano dividido pelo PIB do ano, em valores correntes. 2026 fica de fora porque "
+              "o ano não fechou", "08_bndes_pib.png", FONTE_MACRO)
+    return macro
+
+
+def selic_tjlp(macro):
+    """A diferença entre a Selic e a TJLP dá uma ideia do subsídio implícito em cada real emprestado."""
+    t = macro[["selic", "tjlp"]].dropna()
+    fig, ax = plt.subplots(figsize=(10, 4.8))
+    ax.fill_between(t.index, t["tjlp"], t["selic"], where=t["selic"] >= t["tjlp"], color=AZUL, alpha=0.12,
+                    linewidth=0, interpolate=True)
+    ax.plot(t.index, t["selic"], color=AZUL, linewidth=2, marker="o", markersize=4)
+    ax.plot(t.index, t["tjlp"], color=LARANJA, linewidth=2, marker="o", markersize=4)
+    ax.text(t.index[-1] + 0.3, t["selic"].iloc[-1], "Selic", va="center", fontsize=9, color=TINTA)
+    ax.text(t.index[-1] + 0.3, t["tjlp"].iloc[-1], "TJLP", va="center", fontsize=9, color=TINTA)
+    ax.axvline(2018, color=TINTA_2, linewidth=1, linestyle=(0, (3, 3)))
+    ax.text(2018.2, t["selic"].max() * 0.95, "TLP passa a valer\nnos novos contratos", fontsize=8.5,
+            color=TINTA_2, va="top")
+    ax.set_xlim(t.index.min() - 0.5, t.index.max() + 1.5)
+    ax.set_xticks(range(int(t.index.min()), int(t.index.max()) + 1, 2))
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:.0f}%"))
+    estilo_linhas(ax)
+    finalizar(fig, ax, "A distância entre a Selic e a TJLP",
+              "Média anual das taxas, em % ao ano. A área azul é quanto a TJLP ficava abaixo da Selic",
+              "09_selic_tjlp.png", FONTE_MACRO)
+
+
+def psi_por_porte(d):
+    """Quem recebeu o PSI. Compara o porte dos clientes do PSI com o das outras linhas automáticas no mesmo período."""
+    w = d[d["ano"].between(2009, 2015) & (d["origem"] == "Indireta automática")]
+    grupo = np.where(w["psi"], "PSI", "Outras linhas automáticas")
+    t = w.groupby([grupo, "porte"], observed=True)["valor_contratado_real"].sum().unstack()[ORDEM_PORTES]
+    t = t.div(t.sum(axis=1), axis=0).loc[["PSI", "Outras linhas automáticas"]]
+    n = w.groupby([grupo, "porte"], observed=True).size().unstack()[ORDEM_PORTES]
+    n = n.div(n.sum(axis=1), axis=0)
+    pd.concat({"parcela_valor": t, "parcela_operacoes": n}).to_csv(RESULTADOS / "psi_porte.csv", float_format="%.4f")
+
+    fig, ax = plt.subplots(figsize=(9, 3.9))
+    y = np.arange(len(ORDEM_PORTES))[::-1]
+    h = 0.36
+    for k, (nome, cor_) in enumerate([("PSI", AZUL), ("Outras linhas automáticas", CINZA)]):
+        v = t.loc[nome].to_numpy()
+        ax.barh(y + (0.5 - k) * h, v, height=h, color=cor_, edgecolor=SUPERFICIE, linewidth=1)
+        for yi, vi in zip(y, v):
+            ax.text(vi + 0.008, yi + (0.5 - k) * h, pct(vi), va="center", fontsize=9, color=TINTA_2)
+    ax.set_yticks(y, ORDEM_PORTES, color=TINTA)
+    ax.set_xlim(0, 0.62)
+    ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: pct(v)))
+    ax.grid(axis="x", color=GRADE, linewidth=0.8)
+    ax.set_axisbelow(True)
+    ax.tick_params(length=0)
+    ax.spines["left"].set_visible(False)
+    legenda(ax, [("PSI", AZUL), ("Outras linhas automáticas", CINZA)])
+    finalizar(fig, ax, "No canal automático, o PSI foi menos concentrado em grandes empresas",
+              "Parcela do valor contratado por porte do cliente, operações indiretas automáticas de 2009 a 2015",
+              "10_psi_porte.png")
+    return t
+
+
+def concentracao(d):
+    """Campeões nacionais. Parcela do valor de cada ano que foi para os 20 e os 100 maiores clientes do ano."""
+    linhas = {}
+    for ano, g in d.groupby("ano"):
+        por_cliente = g.groupby("cliente", observed=True)["valor_contratado_real"].sum().sort_values(ascending=False)
+        total = por_cliente.sum()
+        linhas[ano] = {"top20": por_cliente.head(20).sum() / total, "top100": por_cliente.head(100).sum() / total,
+                       "maior_cliente": por_cliente.index[0], "parcela_maior": por_cliente.iloc[0] / total}
+    t = pd.DataFrame(linhas).T
+    t.to_csv(RESULTADOS / "concentracao_ano.csv")
+    t = t.loc[:2025, ["top20", "top100"]].astype(float)
+
+    fig, ax = plt.subplots(figsize=(10, 4.8))
+    ax.axvspan(2008.5, 2014.5, color=GRADE, alpha=0.45, linewidth=0)
+    ax.text(2011.5, 0.05, "anos de maior expansão", ha="center", fontsize=8.5, color=TINTA_2)
+    for col, cor_, nome in [("top100", AZUL, "100 maiores"), ("top20", LARANJA, "20 maiores")]:
+        ax.plot(t.index, t[col], color=cor_, linewidth=2, marker="o", markersize=4)
+        ax.text(t.index[-1] + 0.3, t[col].iloc[-1], nome, va="center", fontsize=9, color=TINTA)
+    ax.set_ylim(0, 0.8)
+    ax.set_xlim(t.index.min() - 0.5, t.index.max() + 2.2)
+    ax.set_xticks(range(2002, 2026, 2))
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: pct(v)))
+    estilo_linhas(ax)
+    finalizar(fig, ax, "A concentração subiu depois do boom, não durante",
+              "Parcela do valor contratado em cada ano que foi para os maiores clientes daquele ano",
+              "11_concentracao.png")
+    return pd.DataFrame(linhas).T
+
+
+def norte_nordeste(d):
+    """Desigualdade regional. Parcela do Norte e do Nordeste no crédito, no PIB e na população."""
+    com_uf = d[d["uf"].notna()]
+    nne = com_uf["uf"].astype(str).isin(NORTE_NORDESTE)
+    credito = com_uf[nne].groupby("ano")["valor_contratado_real"].sum() / com_uf.groupby("ano")["valor_contratado_real"].sum()
+    pib = pd.read_csv(AUX / "pib_uf.csv")
+    pib_nne = pib[pib["uf"].isin(NORTE_NORDESTE)].groupby("ano")["pib"].sum() / pib.groupby("ano")["pib"].sum()
+    pop = pd.read_csv(AUX / "populacao_uf.csv").set_index("uf")["populacao"]
+    pop_nne = pop[pop.index.isin(NORTE_NORDESTE)].sum() / pop.sum()
+    t = pd.DataFrame({"credito": credito, "pib": pib_nne}).loc[:2025]
+    t["populacao_2022"] = pop_nne
+    t.to_csv(RESULTADOS / "norte_nordeste.csv", float_format="%.4f")
+
+    fig, ax = plt.subplots(figsize=(10, 4.8))
+    ax.axhline(pop_nne, color=TINTA_2, linewidth=1, linestyle=(0, (3, 3)))
+    ax.text(2002, pop_nne + 0.012, f"População, {pct(pop_nne)}", fontsize=8.5, color=TINTA_2)
+    ax.plot(t.index, t["credito"], color=AZUL, linewidth=2, marker="o", markersize=4)
+    pib_ok = t["pib"].dropna()
+    ax.plot(pib_ok.index, pib_ok, color=LARANJA, linewidth=2, marker="o", markersize=4)
+    ax.text(t.index[-1] + 0.3, t["credito"].iloc[-1], "Crédito do BNDES", va="center", fontsize=9, color=TINTA)
+    ax.text(pib_ok.index[-1] + 0.3, pib_ok.iloc[-1] + 0.02, "PIB", va="center", fontsize=9, color=TINTA)
+    for a in (2009, 2012):
+        ax.annotate(pct(t.loc[a, "credito"]), (a, t.loc[a, "credito"]), xytext=(0, 7), textcoords="offset points",
+                    ha="center", fontsize=8.5, color=TINTA_2)
+    ax.set_ylim(0, 0.45)
+    ax.set_xlim(t.index.min() - 0.5, t.index.max() + 3.2)
+    ax.set_xticks(range(2002, 2026, 2))
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: pct(v)))
+    estilo_linhas(ax)
+    finalizar(fig, ax, "Norte e Nordeste recebem o crédito do tamanho do seu PIB, não da sua população",
+              "Parcela do Norte e do Nordeste no valor contratado com UF definida e no PIB (IBGE, até 2023)",
+              "12_norte_nordeste.png")
+    return t, pop_nne
+
+
 def main():
     RESULTADOS.mkdir(exist_ok=True)
     FIGURAS.mkdir(exist_ok=True)
@@ -387,6 +549,17 @@ def main():
     cl = clientes(d)
     print(f"\nTop 10 {pct(cl.head(10)['parcela'].sum())}, top 100 {pct(cl.head(100)['parcela'].sum())}, "
           f"{inteiro(len(cl))} clientes")
+
+    print("\nHipóteses da literatura")
+    macro = tamanho_na_economia(d)
+    print(macro[["contratado_pib", "diferenca_selic_tjlp"]].round(3).T.to_string())
+    selic_tjlp(macro)
+    print(psi_por_porte(d).round(3).to_string())
+    print(concentracao(d)[["top20", "maior_cliente", "parcela_maior"]].loc[2016:2021].to_string())
+    t, pop_nne = norte_nordeste(d)
+    print(t.round(3).T.to_string())
+    print("média crédito NNE 2010-2015", pct(t.loc[2010:2015, "credito"].mean(), 1),
+          "| 2018-2025", pct(t.loc[2018:2025, "credito"].mean(), 1), "| PIB 2018-2023", pct(t.loc[2018:2023, "pib"].mean(), 1))
 
 
 if __name__ == "__main__":

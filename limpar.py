@@ -9,6 +9,8 @@ Saída
     dados/tratados/nao_automaticas.parquet    só as não automáticas, com a descrição do projeto
     dados/auxiliares/ipca.csv                 índice do IPCA mensal (Banco Central, série 433)
     dados/auxiliares/populacao_uf.csv         população por UF no Censo 2022 (IBGE, tabela 4709)
+    dados/auxiliares/macro_anual.csv          PIB do Brasil, Selic e TJLP por ano (Banco Central, séries 4382, 4189 e 256)
+    dados/auxiliares/pib_uf.csv               PIB por UF e ano (IBGE, tabela 5938)
 
 Os valores ficam em reais correntes e também corrigidos pelo IPCA para o último mês com índice.
 """
@@ -137,6 +139,36 @@ def populacao():
     return pd.read_csv(destino)
 
 
+def serie_bcb(numero):
+    r = requests.get(f"https://api.bcb.gov.br/dados/serie/bcdata.sgs.{numero}/dados",
+                     params={"formato": "json", "dataInicial": "01/01/2002", "dataFinal": "31/12/2030"}, timeout=60)
+    r.raise_for_status()
+    s = pd.DataFrame(r.json())
+    s["data"] = pd.to_datetime(s["data"], format="%d/%m/%Y")
+    s["valor"] = s["valor"].astype(float)
+    return s
+
+
+def contexto_macro():
+    """PIB do Brasil, Selic, TJLP e PIB por UF, para comparar o BNDES com a economia."""
+    destino = AUX / "macro_anual.csv"
+    if not destino.exists():
+        pib = serie_bcb(4382)                       # PIB acumulado em 12 meses, R$ milhões correntes
+        dez = pib[pib["data"].dt.month == 12]
+        anual = pd.DataFrame({"ano": dez["data"].dt.year, "pib": dez["valor"] * 1e6}).set_index("ano")
+        for nome, numero in [("selic", 4189), ("tjlp", 256)]:   # % ao ano, média dos meses
+            s = serie_bcb(numero)
+            anual[nome] = s.groupby(s["data"].dt.year)["valor"].mean()
+        anual.to_csv(destino)
+    destino_uf = AUX / "pib_uf.csv"
+    if not destino_uf.exists():
+        r = requests.get("https://apisidra.ibge.gov.br/values/t/5938/n3/all/v/37/p/all", timeout=120)
+        r.raise_for_status()
+        linhas = r.json()[1:]
+        pd.DataFrame({"uf": [UF_DO_CODIGO[l["D1C"]] for l in linhas], "ano": [int(l["D3N"]) for l in linhas],
+                      "pib": [float(l["V"]) * 1000 for l in linhas]}).to_csv(destino_uf, index=False)
+
+
 def corrigir_pela_inflacao(d, indice):
     """Leva os valores para reais do último mês com IPCA. Contratos do mês corrente usam o último índice."""
     ultimo = indice["indice"].iloc[-1]
@@ -152,7 +184,8 @@ def main():
     TRATADOS.mkdir(parents=True, exist_ok=True)
     indice = ipca()
     pop = populacao()
-    print(f"IPCA até {indice['mes'].iloc[-1]}, população de {len(pop)} UFs")
+    contexto_macro()
+    print(f"IPCA até {indice['mes'].iloc[-1]}, população de {len(pop)} UFs, PIB, Selic e TJLP")
 
     print("Lendo não automáticas")
     bruto_na = pd.read_csv(NAO_AUTOMATICAS, sep=";", encoding="latin1", dtype=str)
